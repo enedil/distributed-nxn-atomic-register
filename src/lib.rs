@@ -1,21 +1,26 @@
+mod atomic_register;
 mod domain;
+mod register_client;
 mod sectors_manager;
 mod stable_storage;
-mod atomic_register;
-mod register_client;
 mod transfer;
 
+pub use crate::atomic_register::*;
 pub use crate::domain::*;
+pub use crate::register_client::*;
 pub use crate::sectors_manager::*;
 pub use crate::stable_storage::*;
-pub use crate::atomic_register::*;
-pub use crate::register_client::*;
 pub use crate::transfer::*;
-
 
 async fn handle_connection(config: Configuration, mut sock: tokio::net::TcpStream) {
     loop {
-        let (cmd, ok) = transfer::deserialize_register_command(&mut sock, &config.hmac_system_key, &config.hmac_client_key).await.unwrap();
+        let (cmd, ok) = deserialize_register_command(
+            &mut sock,
+            &config.hmac_system_key,
+            &config.hmac_client_key,
+        )
+        .await
+        .unwrap();
         if !ok {
             continue;
         }
@@ -26,18 +31,15 @@ async fn handle_connection(config: Configuration, mut sock: tokio::net::TcpStrea
     }
 }
 
-async fn handle_client(_config: &Configuration, _cmd: ClientRegisterCommand) {
+async fn handle_client(_config: &Configuration, _cmd: ClientRegisterCommand) {}
 
-}
-
-async fn handle_system(_config: &Configuration, _cmd: SystemRegisterCommand) {
-
-}
-
+async fn handle_system(_config: &Configuration, _cmd: SystemRegisterCommand) {}
 
 pub async fn run_register_process(config: Configuration) {
-    let (host, port) = &config.public.tcp_locations[(config.public.self_rank-1) as usize];
-    let sock = tokio::net::TcpListener::bind(format!("{}:{}", host, port)).await.unwrap();
+    let (host, port) = &config.public.tcp_locations[(config.public.self_rank - 1) as usize];
+    let sock = tokio::net::TcpListener::bind(format!("{}:{}", host, port))
+        .await
+        .unwrap();
 
     //let mut clients = Vec::new();
 
@@ -46,4 +48,3 @@ pub async fn run_register_process(config: Configuration) {
         tokio::spawn(handle_connection(config.clone(), s));
     }
 }
-
