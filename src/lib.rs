@@ -10,7 +10,7 @@ pub use transfer_public::*;
 
 async fn handle_connection(config: Configuration, mut sock: tokio::net::TcpStream) {
     loop {
-        let (cmd, ok) = transfer_public::deserialize_register_command(&mut sock, &config.hmac_system_key, &config.hmac_client_key).await?;
+        let (cmd, ok) = transfer_public::deserialize_register_command(&mut sock, &config.hmac_system_key, &config.hmac_client_key).await.unwrap();
         if !ok {
             continue;
         }
