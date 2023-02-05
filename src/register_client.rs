@@ -1,8 +1,11 @@
-use tokio::{stream, sync::Mutex};
+use tokio::{io::AsyncWriteExt, stream, sync::Mutex};
 
-use crate::{PublicConfiguration, SystemRegisterCommand, SystemCommandHeader};
+use crate::{
+    serialize_register_command, Configuration, PublicConfiguration, RegisterCommand,
+    SystemCommandHeader, SystemRegisterCommand,
+};
 use std::{
-    collections::{HashSet, HashMap},
+    collections::{HashMap, HashSet},
     net::{IpAddr, Ipv4Addr, SocketAddr},
     str::FromStr,
     sync::Arc,
@@ -34,14 +37,16 @@ struct ClientInfo {
     location: (String, u16),
     stream: Option<tokio::net::TcpStream>,
     pending_messages: HashMap<SystemCommandHeader, Arc<SystemRegisterCommand>>,
+    hmac_key: Arc<[u8; 64]>,
 }
 
 impl ClientInfo {
-    fn new(location: (String, u16)) -> ClientInfo {
+    fn new(location: (String, u16), hmac_key: Arc<[u8; 64]>) -> ClientInfo {
         ClientInfo {
             location,
             stream: None,
             pending_messages: HashMap::new(),
+            hmac_key,
         }
     }
 
@@ -59,7 +64,16 @@ impl ClientInfo {
     }
 
     async fn try_send(&mut self) {
-        
+        if let Some(stream) = &mut self.stream {
+            for (_, msg) in self.pending_messages.iter() {
+                let cmd = RegisterCommand::System(msg.as_ref().clone());
+                if let Err(_) =
+                    serialize_register_command(&cmd, stream, self.hmac_key.as_ref()).await
+                {
+                    // ignore
+                }
+            }
+        }
     }
 
     fn append_message(&mut self, msg: Arc<SystemRegisterCommand>) {
@@ -71,17 +85,45 @@ impl ClientInfo {
     }
 }
 
-pub(crate) struct RegisterClientImpl(Vec<Mutex<ClientInfo>>);
+pub(crate) struct RegisterClientImpl(
+    Arc<Vec<Mutex<ClientInfo>>>,
+    Option<tokio::task::JoinHandle<()>>,
+);
 
 impl RegisterClientImpl {
-    pub(crate) fn new(config: &PublicConfiguration) -> RegisterClientImpl {
-        RegisterClientImpl(
-            config
-                .tcp_locations
-                .iter()
-                .map(|x| Mutex::new(ClientInfo::new(x.clone())))
-                .collect(),
-        )
+    pub(crate) fn new(config: &Configuration) -> RegisterClientImpl {
+        let hmac_key = Arc::new(config.hmac_system_key);
+        let mut client = RegisterClientImpl(
+            Arc::new(
+                config
+                    .public
+                    .tcp_locations
+                    .iter()
+                    .map(|x| Mutex::new(ClientInfo::new(x.clone(), hmac_key.clone())))
+                    .collect(),
+            ),
+            None,
+        );
+        client.run_timer();
+        client
+    }
+
+    fn run_timer(&mut self) {
+        // meeh
+        let client_info = self.0.clone();
+        self.1 = Some(tokio::task::spawn(async move {
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(20));
+            
+            loop {
+                interval.tick().await;
+
+                for guard in client_info.iter() {
+                    let mut client = guard.lock().await;
+                    client.try_connect().await;
+                    client.try_send().await;
+                }
+            }
+        }));
     }
 }
 
@@ -89,9 +131,10 @@ impl RegisterClientImpl {
 impl RegisterClient for RegisterClientImpl {
     async fn send(&self, msg: Send) {
         let mut client = self.0[msg.target as usize - 1].lock().await;
-        
+
         client.try_connect().await;
-        
+        client.append_message(msg.cmd);
+        client.try_send().await;
     }
     async fn broadcast(&self, msg: Broadcast) {
         for i in 1..=self.0.len() {
