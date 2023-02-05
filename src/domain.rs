@@ -92,7 +92,7 @@ pub struct ClientCommandHeader {
     pub sector_idx: SectorIdx,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Hash, Eq, PartialEq)]
 pub struct SystemCommandHeader {
     pub process_identifier: u8,
     pub msg_ident: Uuid,
