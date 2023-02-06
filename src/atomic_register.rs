@@ -6,8 +6,8 @@ use crate::{
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::{alloc::System, collections::HashMap};
-use uuid::{timestamp, Uuid};
+use std::collections::HashMap;
+use uuid::Uuid;
 
 #[async_trait::async_trait]
 pub trait AtomicRegister: Send + Sync {
@@ -86,7 +86,6 @@ struct RegContent {
 
 impl RegContent {
     async fn new(reg: &mut ARegister) -> RegContent {
-        unimplemented!();
         let n = reg.processes_count as usize;
         let r = RegContent {
             timestamp: 0,
@@ -273,9 +272,9 @@ impl ARegister {
         data_to_write: SectorVec,
     ) {
         let SystemCommandHeader {
-            process_identifier,
-            msg_ident,
-            read_ident,
+            process_identifier: _,
+            msg_ident: _,
+            read_ident: _,
             sector_idx,
         } = header;
 

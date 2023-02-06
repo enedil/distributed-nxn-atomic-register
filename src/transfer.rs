@@ -183,6 +183,70 @@ pub async fn deserialize_register_command(
     Ok((payload, ok))
 }
 
+#[repr(u8)]
+#[derive(Copy, Clone)]
+pub (crate) enum ClientOperationType {
+    Read,
+    Write,
+}
+
+pub(crate) enum ClientResponse {
+    Ok(OperationSuccess),
+    InvalidHmac(ClientOperationType),
+    InvalidSector(ClientOperationType),
+}
+impl ClientResponse {
+    fn to_status(&self) -> StatusCode {
+        match self {
+            ClientResponse::Ok(_) => StatusCode::Ok,
+            ClientResponse::InvalidHmac(_) => StatusCode::AuthFailure,
+            ClientResponse::InvalidSector(_) => StatusCode::InvalidSectorIndex,
+        }
+    }
+    fn op_type(&self) -> ClientOperationType {
+        match self {
+            ClientResponse::Ok(s) => match s.op_return {
+                OperationReturn::Read(_) => ClientOperationType::Read,
+                OperationReturn::Write => ClientOperationType::Write,
+            },
+            ClientResponse::InvalidHmac(x) => *x,
+            ClientResponse::InvalidSector(x) => *x,
+        }
+    }
+}
+
+pub(crate) async fn serialize_response_to_client(
+    data: &mut (dyn AsyncWrite + Send + Unpin),
+    hmac_key: &[u8; 64],
+    response: ClientResponse,
+) -> Result<(), Error> {
+    let hmac = HmacSha256::new_from_slice(hmac_key)
+        .map_err(|_| make_error())
+        .unwrap();
+
+    let mut writer = HmacAsyncWriter { writer: data, hmac };
+    writer.write_all(&MAGIC_NUMBER).await?;
+
+    let padding = [31u8, 45u8];
+    writer.write_all(&padding).await?;
+
+    writer.write_u8(response.to_status() as u8).await?;
+    writer.write_u8(response.op_type() as u8 + 0x40).await?;
+
+    if let ClientResponse::Ok(success) = response {
+        writer.write_u64(success.request_identifier).await?;
+
+        if let OperationReturn::Read(buf) = success.op_return {
+            writer.write_all(&buf.read_data.0).await?;
+        };
+    }
+
+    let computed_hmac = writer.hmac.finalize().into_bytes();
+    data.write_all(&computed_hmac).await?;
+
+    Ok(())
+}
+
 pub async fn serialize_register_command(
     cmd: &RegisterCommand,
     data: &mut (dyn AsyncWrite + Send + Unpin),

@@ -113,7 +113,7 @@ impl RegisterClientImpl {
         let client_info = self.0.clone();
         self.1 = Some(tokio::task::spawn(async move {
             let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(20));
-            
+
             loop {
                 interval.tick().await;
 
