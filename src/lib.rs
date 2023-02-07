@@ -8,7 +8,6 @@ use std::sync::Arc;
 
 use async_channel::Receiver;
 use async_channel::Sender;
-use tokio::io::AsyncWriteExt;
 use tokio::net::tcp::OwnedWriteHalf;
 use tokio::sync::Mutex;
 
@@ -39,61 +38,58 @@ async fn handle_connection(
         let result =
             deserialize_register_command(&mut rx, &config.hmac_system_key, &config.hmac_client_key)
                 .await;
-        match result {
-            Ok((cmd, ok)) => {
-                let optype = match &cmd {
-                    RegisterCommand::Client(c) => Some(match c.content {
-                        ClientRegisterCommandContent::Read => ClientOperationType::Read,
-                        ClientRegisterCommandContent::Write { .. } => ClientOperationType::Write,
-                    }),
-                    RegisterCommand::System(_) => None,
-                };
-                if ok {
-                    let (msg, sector_idx) = match cmd {
-                        RegisterCommand::Client(client) => {
-                            let idx = client.header.sector_idx as usize;
-                            (
-                                RegisterCommandInternal::Client((client, writer.clone())),
-                                idx,
-                            )
-                        }
-                        RegisterCommand::System(system) => {
-                            let idx = system.header.sector_idx as usize;
-                            (RegisterCommandInternal::System(system), idx)
-                        }
-                    };
-
-                    if (sector_idx as u64) < config.public.n_sectors {
-                        let specific_sender = {
-                            let nnar_vec = nnars.lock().await;
-                            nnar_vec[sector_index_to_register_index(&config.public, sector_idx)]
-                                .clone()
-                        };
-                        specific_sender.send(msg).await.expect("bbb");
-                    } else {
-                        let w = &mut *writer.lock().await;
-                        serialize_response_to_client(
-                            w,
-                            &config.hmac_system_key,
-                            ClientResponse::InvalidSector(
-                                optype.expect("system sent invalid sector index!"),
-                            ),
+        if let Ok((cmd, ok)) = result {
+            let optype = match &cmd {
+                RegisterCommand::Client(c) => Some(match c.content {
+                    ClientRegisterCommandContent::Read => ClientOperationType::Read,
+                    ClientRegisterCommandContent::Write { .. } => ClientOperationType::Write,
+                }),
+                RegisterCommand::System(_) => None,
+            };
+            if ok {
+                let (msg, sector_idx) = match cmd {
+                    RegisterCommand::Client(client) => {
+                        let idx = client.header.sector_idx as usize;
+                        (
+                            RegisterCommandInternal::Client((client, writer.clone())),
+                            idx,
                         )
-                        .await;
                     }
+                    RegisterCommand::System(system) => {
+                        let idx = system.header.sector_idx as usize;
+                        (RegisterCommandInternal::System(system), idx)
+                    }
+                };
+
+                if (sector_idx as u64) < config.public.n_sectors {
+                    let specific_sender = {
+                        let nnar_vec = nnars.lock().await;
+                        nnar_vec[sector_index_to_register_index(&config.public, sector_idx)]
+                            .clone()
+                    };
+                    specific_sender.send(msg).await.expect("bbb");
                 } else {
                     let w = &mut *writer.lock().await;
                     serialize_response_to_client(
                         w,
                         &config.hmac_system_key,
-                        ClientResponse::InvalidHmac(optype.expect("system sent invalid hmac")),
+                        ClientResponse::InvalidSector(
+                            optype.expect("system sent invalid sector index!"),
+                        ),
                     )
-                    .await;
+                    .await.expect("coś sie nie udauo");
                 }
+            } else {
+                let w = &mut *writer.lock().await;
+                serialize_response_to_client(
+                    w,
+                    &config.hmac_system_key,
+                    ClientResponse::InvalidHmac(optype.expect("system sent invalid hmac")),
+                )
+                .await.expect("coś się nie udauo");
             }
-            Err(_) => {
-                // continue;
-            }
+        } else {
+            // continue
         }
     }
 }

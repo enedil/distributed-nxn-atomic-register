@@ -1,13 +1,16 @@
+use crate::domain::ReadReturn;
 use crate::{
     Broadcast, ClientCommandHeader, ClientRegisterCommand, ClientRegisterCommandContent,
-    OperationSuccess, RegisterClient, SectorVec, SectorsManager, StableStorage,
-    SystemCommandHeader, SystemRegisterCommand, SystemRegisterCommandContent,
+    OperationReturn, OperationSuccess, RegisterClient, SectorIdx, SectorVec, SectorsManager,
+    StableStorage, SystemCommandHeader, SystemRegisterCommand, SystemRegisterCommandContent,
 };
+use core::panic;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::collections::HashMap;
 use uuid::Uuid;
+
+type CallbackType = Box<dyn FnOnce(OperationSuccess) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
 
 #[async_trait::async_trait]
 pub trait AtomicRegister: Send + Sync {
@@ -20,9 +23,7 @@ pub trait AtomicRegister: Send + Sync {
     async fn client_command(
         &mut self,
         cmd: ClientRegisterCommand,
-        success_callback: Box<
-            dyn FnOnce(OperationSuccess) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync,
-        >,
+        success_callback: CallbackType,
     );
 
     /// Handle a system command.
@@ -63,50 +64,55 @@ enum AckOpt {
     Ack,
 }
 
-struct ReadListElem {
-    max_ts: u64,
-    wr: u64,
+#[derive(Clone, Debug)]
+struct WrTsVal {
+    timestamp: u64,
+    wr: u8,
     val: ValType,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+enum OperationStatus {
+    Idle,
+    Writing(SectorVec),
+    Reading,
 }
 
 #[derive(Clone, Debug)]
 struct RegContent {
-    timestamp: u64,
-    wr: u8,
-    val: ValType,
-    rid: u64,
-    readlist: Vec<Option<(u64, u8, ValType)>>,
+    wrtsval: WrTsVal,
+    readlist: Vec<Option<WrTsVal>>,
     acklist: Vec<AckOpt>,
-    reading: bool,
-    writing: bool,
-    writeval: ValType,
+    status: OperationStatus,
     readval: ValType,
     write_phase: bool,
 }
 
 impl RegContent {
-    async fn new(reg: &mut ARegister) -> RegContent {
-        let n = reg.processes_count as usize;
+    async fn new(process_count: u8, status: OperationStatus) -> RegContent {
         let r = RegContent {
-            timestamp: 0,
-            wr: 0,
-            val: None,
-            rid: 0,
-            readlist: reg.fresh_readlist(),
-            acklist: reg.fresh_acklist(),
-            reading: false,
-            writing: false,
-            writeval: None,
-            readval: None,
+            wrtsval: WrTsVal {
+                timestamp: 0,
+                wr: 0,
+                val: None,
+            },
+            readlist: fresh_readlist(process_count),
+            acklist: fresh_acklist(process_count),
+            status,
             write_phase: false,
+            readval: None,
         };
-        reg.metadata.put("rid", &0u8.to_be_bytes()).await.unwrap();
-        reg.metadata.put("rid", &0u8.to_be_bytes()).await.unwrap();
-        reg.metadata.put("rid", &0u8.to_be_bytes()).await.unwrap();
-        todo!();
-        // jak robić store? retreive?
+        // TODO jak robić store? retreive?
         r
     }
+}
+
+struct OngoingCommand {
+    content: RegContent,
+    command_uuid: Uuid,
+    success_callback:
+        Option<CallbackType>,
+    sector_idx: usize,
 }
 
 struct ARegister {
@@ -114,62 +120,79 @@ struct ARegister {
     metadata: Box<dyn StableStorage>,
     register_client: Arc<dyn RegisterClient>,
     sectors_manager: Arc<dyn SectorsManager>,
-    processes_count: u8,
+    process_count: u8,
 
     rid: u64,
 
-    // usize - sector index
-    content: HashMap<usize, RegContent>,
+    content: Option<OngoingCommand>,
+}
+
+async fn read_wr_ts_val(
+    sectors_manager: &mut Arc<dyn SectorsManager>,
+    metadata: &mut Box<dyn StableStorage>,
+    idx: SectorIdx,
+) -> WrTsVal {
+    let ts_wr = sectors_manager.read_metadata(idx).await;
+    let data = sectors_manager.read_data(idx).await;
+    WrTsVal {
+        val: Some(data),
+        timestamp: ts_wr.0,
+        wr: ts_wr.1,
+    }
+}
+
+async fn write_wr_ts_val(
+    sectors_manager: &mut Arc<dyn SectorsManager>,
+    metadata: &mut Box<dyn StableStorage>,
+    idx: SectorIdx,
+    wrtsval: WrTsVal,
+) {
+    let WrTsVal { timestamp, wr, val } = wrtsval;
+    sectors_manager
+        .write(idx, &(val.unwrap(), timestamp, wr))
+        .await;
+    todo!("sprawdź, czy .write działa dobrze");
+}
+
+fn xd() {
+    todo!("recover stable storage");
 }
 
 impl ARegister {
-    const FAILED_TO_GET_REGCONTENT: &str = "failed to get regcontent";
-
     fn new(
         self_ident: u8,
         metadata: Box<dyn StableStorage>,
         register_client: Arc<dyn RegisterClient>,
         sectors_manager: Arc<dyn SectorsManager>,
-        processes_count: u8,
+        process_count: u8,
     ) -> ARegister {
         ARegister {
             self_ident,
             metadata,
             register_client,
             sectors_manager,
-            processes_count,
+            process_count,
             rid: 0,
-            content: HashMap::new(),
+            content: None,
         }
     }
 
-    async fn try_init(&mut self, idx: usize) {
-        if !self.content.contains_key(&idx) {
-            let content = RegContent::new(self).await;
-            self.content.insert(idx, content);
-        }
-    }
+    async fn handle_read(
+        &mut self,
+        header: ClientCommandHeader,
+        success_callback: CallbackType,
+    ) {
+        let msg_ident = Uuid::new_v4();
 
-    fn get_mut(&mut self, idx: usize) -> &mut RegContent {
-        self.content
-            .get_mut(&idx)
-            .expect(ARegister::FAILED_TO_GET_REGCONTENT)
-    }
+        let content = RegContent::new(self.process_count, OperationStatus::Reading).await;
 
-    fn refresh_lists(&mut self, idx: usize) {
-        let fresh_readlist = self.fresh_readlist();
-        let fresh_acklist = self.fresh_acklist();
+        self.content = Some(OngoingCommand {
+            content,
+            command_uuid: msg_ident,
+            success_callback: Some(success_callback),
+            sector_idx: header.sector_idx as usize,
+        });
 
-        let mut regcontent = self.get_mut(idx);
-        regcontent.readlist = fresh_readlist;
-        regcontent.acklist = fresh_acklist;
-    }
-
-    async fn handle_read(&mut self, header: ClientCommandHeader) {
-        let idx = header.sector_idx as usize;
-
-        self.refresh_lists(idx);
-        self.get_mut(idx).reading = true;
         self.store_rid().await;
 
         let cmd = SystemRegisterCommand {
@@ -177,30 +200,44 @@ impl ARegister {
                 process_identifier: self.self_ident,
                 sector_idx: header.sector_idx,
                 read_ident: self.rid,
-                msg_ident: Uuid::new_v4(),
+                msg_ident,
             },
             content: SystemRegisterCommandContent::ReadProc,
         };
+
         let msg = Broadcast { cmd: Arc::new(cmd) };
         self.register_client.broadcast(msg).await;
     }
 
-    async fn handle_write(&mut self, header: ClientCommandHeader, data: SectorVec) {
-        let i = header.sector_idx as usize;
+    async fn handle_write(
+        &mut self,
+        header: ClientCommandHeader,
+        data: SectorVec,
+        success_callback: CallbackType,
+    ) {
+        let msg_ident = Uuid::new_v4();
 
-        self.get_mut(i).writeval = Some(data);
-        self.refresh_lists(i);
+        let content = RegContent::new(self.process_count, OperationStatus::Writing(data)).await;
+
+        self.content = Some(OngoingCommand {
+            content,
+            command_uuid: msg_ident,
+            success_callback: Some(success_callback),
+            sector_idx: header.sector_idx as usize,
+        });
+
         self.store_rid().await;
-        self.get_mut(i).writing = true;
+
         let cmd = SystemRegisterCommand {
             header: SystemCommandHeader {
                 process_identifier: self.self_ident,
                 sector_idx: header.sector_idx,
                 read_ident: self.rid,
-                msg_ident: Uuid::new_v4(),
+                msg_ident,
             },
             content: SystemRegisterCommandContent::ReadProc,
         };
+
         let msg = Broadcast { cmd: Arc::new(cmd) };
         self.register_client.broadcast(msg).await;
     }
@@ -214,26 +251,26 @@ impl ARegister {
         } = header;
 
         let sector_data = self.sectors_manager.read_data(sector_idx).await;
+        // TODO: skąd czytać te dane?
         let (timestamp, write_rank) = self.sectors_manager.read_metadata(sector_idx).await;
 
-        self.register_client
-            .send(crate::Send {
-                cmd: Arc::new(SystemRegisterCommand {
-                    content: SystemRegisterCommandContent::Value {
-                        timestamp,
-                        write_rank,
-                        sector_data,
-                    },
-                    header: SystemCommandHeader {
-                        msg_ident,
-                        process_identifier,
-                        read_ident,
-                        sector_idx,
-                    },
-                }),
-                target: process_identifier,
-            })
-            .await;
+        let msg = crate::Send {
+            cmd: Arc::new(SystemRegisterCommand {
+                content: SystemRegisterCommandContent::Value {
+                    timestamp,
+                    write_rank,
+                    sector_data,
+                },
+                header: SystemCommandHeader {
+                    msg_ident,
+                    process_identifier,
+                    read_ident,
+                    sector_idx,
+                },
+            }),
+            target: process_identifier,
+        };
+        self.register_client.send(msg).await;
     }
 
     async fn handle_value(
@@ -250,18 +287,93 @@ impl ARegister {
             sector_idx,
         } = header;
 
-        let rid = self.rid;
-        let c = self.get_mut(sector_idx as usize);
-        if read_ident == rid && !c.write_phase {
-            c.readlist[process_identifier as usize] =
-                Some((timestamp, write_rank, sector_data.into()));
-            if (c.reading || c.writing)
-                && 2 * readlist_size(&c.readlist) > (self.processes_count as usize)
-            {
-                c.readlist[self.self_ident as usize] = Some(todo!());
-                todo!();
+        let process_count = self.process_count as usize;
+
+        match &mut self.content {
+            Some(OngoingCommand {
+                content,
+                command_uuid,
+                success_callback: _,
+                sector_idx: current_sector_idx,
+            }) => {
+                if *command_uuid == msg_ident && sector_idx as usize == *current_sector_idx {
+                    if read_ident == self.rid && !content.write_phase {
+                        content.readlist[process_identifier as usize] = Some(WrTsVal {
+                            timestamp,
+                            wr: write_rank,
+                            val: sector_data.into(),
+                        });
+
+                        if content.status != OperationStatus::Idle
+                            && 2 * readlist_size(&content.readlist) > process_count
+                        {
+                            content.readlist[self.self_ident as usize] =
+                                Some(content.wrtsval.clone());
+
+                            let maxread =
+                                readlist_highest(&content.readlist).expect("can't be empty");
+
+                            content.readval = maxread.val.clone();
+
+                            content.acklist = fresh_acklist(self.process_count);
+                            content.readlist = fresh_readlist(self.process_count);
+
+                            content.write_phase = true;
+
+                            let cmd_content = match &content.status {
+                                OperationStatus::Reading => {
+                                    SystemRegisterCommandContent::WriteProc {
+                                        timestamp: maxread.timestamp,
+                                        write_rank: maxread.wr,
+                                        data_to_write: content
+                                            .readval
+                                            .clone()
+                                            .expect("at least one non-empty entry"),
+                                    }
+                                }
+                                OperationStatus::Writing(writeval) => {
+                                    content.wrtsval = WrTsVal {
+                                        timestamp: maxread.timestamp + 1,
+                                        wr: self.self_ident,
+                                        val: Some(writeval.clone()),
+                                    };
+                                    write_wr_ts_val(
+                                        &mut self.sectors_manager,
+                                        &mut self.metadata,
+                                        sector_idx,
+                                        content.wrtsval.clone(),
+                                    )
+                                    .await;
+                                    SystemRegisterCommandContent::WriteProc {
+                                        timestamp: content.wrtsval.timestamp,
+                                        write_rank: content.wrtsval.wr,
+                                        data_to_write: content.wrtsval.val.clone().unwrap(),
+                                    }
+                                }
+                                OperationStatus::Idle => panic!("unreachable"),
+                            };
+
+                            self.register_client
+                                .broadcast(Broadcast {
+                                    cmd: Arc::new(SystemRegisterCommand {
+                                        header: SystemCommandHeader {
+                                            process_identifier: self.self_ident,
+                                            msg_ident,
+                                            read_ident,
+                                            sector_idx,
+                                        },
+                                        content: cmd_content,
+                                    }),
+                                })
+                                .await;
+                        }
+                    }
+                } else {
+                    self.skip_old_message();
+                }
             }
-        }
+            None => self.skip_old_message(),
+        };
     }
 
     async fn handle_write_proc(
@@ -272,20 +384,39 @@ impl ARegister {
         data_to_write: SectorVec,
     ) {
         let SystemCommandHeader {
-            process_identifier: _,
-            msg_ident: _,
-            read_ident: _,
+            process_identifier,
+            msg_ident,
+            read_ident,
             sector_idx,
         } = header;
 
-        let i = sector_idx as usize;
-        let c = self.get_mut(i);
+        let mut c = read_wr_ts_val(&mut self.sectors_manager, &mut self.metadata, sector_idx).await;
         if (timestamp, write_rank) > (c.timestamp, c.wr) {
             c.timestamp = timestamp;
             c.wr = write_rank;
             c.val = Some(data_to_write);
-            self.store_wr_ts_val(i).await;
+            write_wr_ts_val(&mut self.sectors_manager, &mut self.metadata, sector_idx, c).await;
         }
+
+        let reply = crate::Send {
+            cmd: Arc::new(SystemRegisterCommand {
+                header: SystemCommandHeader {
+                    process_identifier: self.self_ident,
+                    msg_ident,
+                    read_ident,
+                    sector_idx,
+                },
+                content: SystemRegisterCommandContent::Ack,
+            }),
+            target: process_identifier,
+        };
+
+        self.register_client.send(reply).await;
+    }
+
+    fn skip_old_message(&self) {
+        // this functions communicates, that this is a response to
+        // an older command and should be skipped
     }
 
     async fn handle_ack(&mut self, header: SystemCommandHeader) {
@@ -295,53 +426,80 @@ impl ARegister {
             read_ident,
             sector_idx,
         } = header;
-        let i = header.sector_idx as usize;
 
-        let processes_count = self.processes_count as usize;
+        let processes_count = self.process_count as usize;
         let rid = self.rid;
 
-        let fresh_acklist = self.fresh_acklist();
-        let c = self.get_mut(i);
+        match &mut self.content {
+            Some(OngoingCommand {
+                content: c,
+                command_uuid,
+                success_callback,
+                sector_idx: ongoing_sector_idx,
+            }) => {
+                if *ongoing_sector_idx == sector_idx as usize && *command_uuid == msg_ident {
+                    if read_ident == rid && c.write_phase {
+                        c.acklist[process_identifier as usize] = AckOpt::Ack;
+                        if c.status != OperationStatus::Idle
+                            && 2 * acklist_size(&c.acklist) > processes_count
+                        {
+                            c.acklist = fresh_acklist(self.process_count);
+                            c.write_phase = false;
 
-        if read_ident == rid && c.write_phase {
-            c.acklist[process_identifier as usize] = AckOpt::Ack;
-            if 2 * acklist_size(&c.acklist) > processes_count {
-                c.acklist = fresh_acklist;
-                c.write_phase = false;
-                if c.reading {
-                    c.reading = false;
-                    self.register_client.send(unimplemented!()).await;
+                            let op_return = match c.status {
+                                OperationStatus::Reading => OperationReturn::Read(ReadReturn {
+                                    read_data: c
+                                        .readval
+                                        .clone()
+                                        .expect("now it should be something"),
+                                }),
+                                OperationStatus::Writing(..) => OperationReturn::Write,
+                                OperationStatus::Idle => {
+                                    panic!("unreachable");
+                                }
+                            };
+
+                            let mut callback = None;
+                            std::mem::swap(success_callback, &mut callback);
+                            callback.unwrap()(OperationSuccess {
+                                request_identifier: rid,
+                                op_return,
+                            })
+                            .await;
+                            self.content = None;
+                        }
+                    } else {
+                        self.skip_old_message();
+                    }
                 } else {
-                    c.writing = false;
-                    self.register_client.send(unimplemented!()).await;
+                    self.skip_old_message();
                 }
+            }
+            None => {
+                // skip old message
             }
         }
     }
 
     async fn store_rid(&mut self) {
         self.rid += 1;
-        todo!();
-    }
-
-    async fn store_wr_ts_val(&mut self, i: usize) {
-        unimplemented!();
-    }
-
-    fn fresh_readlist(&self) -> Vec<Option<(u64, u8, ValType)>> {
-        let n = self.processes_count as usize;
-        std::iter::repeat(None).take(n).collect::<Vec<_>>()
-    }
-
-    fn fresh_acklist(&self) -> Vec<AckOpt> {
-        let n = self.processes_count as usize;
-        std::iter::repeat(AckOpt::NotAck)
-            .take(n)
-            .collect::<Vec<_>>()
+        self.metadata.put("ridd", &self.rid.to_le_bytes()).await.expect("failed writing rid to metadata storage");
     }
 }
 
-fn readlist_size(readlist: &[Option<(u64, u8, ValType)>]) -> usize {
+fn fresh_readlist(size: u8) -> Vec<Option<WrTsVal>> {
+    let n = size as usize;
+    std::iter::repeat(None).take(n).collect::<Vec<_>>()
+}
+
+fn fresh_acklist(size: u8) -> Vec<AckOpt> {
+    let n = size as usize;
+    std::iter::repeat(AckOpt::NotAck)
+        .take(n)
+        .collect::<Vec<_>>()
+}
+
+fn readlist_size(readlist: &[Option<WrTsVal>]) -> usize {
     let mut count = 0;
     for x in readlist.iter() {
         if let Some(..) = x {
@@ -350,9 +508,10 @@ fn readlist_size(readlist: &[Option<(u64, u8, ValType)>]) -> usize {
     }
     count
 }
-fn acklist_size(readlist: &[AckOpt]) -> usize {
+
+fn acklist_size(acklist: &[AckOpt]) -> usize {
     let mut count = 0;
-    for x in readlist.iter() {
+    for x in acklist.iter() {
         if let AckOpt::Ack = x {
             count += 1;
         }
@@ -360,26 +519,47 @@ fn acklist_size(readlist: &[AckOpt]) -> usize {
     count
 }
 
+fn readlist_highest(readlist: &[Option<WrTsVal>]) -> Option<WrTsVal> {
+    let mut current_max = WrTsVal {
+        timestamp: 0,
+        wr: 0,
+        val: None,
+    };
+    for x in readlist.iter() {
+        match x {
+            Some(x) => {
+                if (x.timestamp, x.wr) > (current_max.timestamp, current_max.wr) {
+                    current_max = x.clone();
+                }
+            }
+            None => (),
+        };
+    }
+    match current_max.val {
+        Some(..) => Some(current_max),
+        None => None,
+    }
+}
+
 #[async_trait::async_trait]
 impl AtomicRegister for ARegister {
     async fn client_command(
         &mut self,
         cmd: ClientRegisterCommand,
-        success_callback: Box<
-            dyn FnOnce(OperationSuccess) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync,
-        >,
+        success_callback: CallbackType,
     ) {
-        self.try_init(cmd.header.sector_idx as usize).await;
+        assert!(self.content.is_none());
         match cmd.content {
-            ClientRegisterCommandContent::Read => self.handle_read(cmd.header).await,
+            ClientRegisterCommandContent::Read => {
+                self.handle_read(cmd.header, success_callback).await
+            }
             ClientRegisterCommandContent::Write { data } => {
-                self.handle_write(cmd.header, data).await
+                self.handle_write(cmd.header, data, success_callback).await
             }
         }
     }
 
     async fn system_command(&mut self, cmd: SystemRegisterCommand) {
-        self.try_init(cmd.header.sector_idx as usize).await;
         match cmd.content {
             SystemRegisterCommandContent::ReadProc => self.handle_read_proc(cmd.header).await,
             SystemRegisterCommandContent::Value {
@@ -387,6 +567,7 @@ impl AtomicRegister for ARegister {
                 write_rank,
                 sector_data,
             } => {
+                assert!(self.content.is_some());
                 self.handle_value(cmd.header, timestamp, write_rank, sector_data)
                     .await
             }
@@ -398,7 +579,10 @@ impl AtomicRegister for ARegister {
                 self.handle_write_proc(cmd.header, timestamp, write_rank, data_to_write)
                     .await
             }
-            SystemRegisterCommandContent::Ack => self.handle_ack(cmd.header).await,
+            SystemRegisterCommandContent::Ack => {
+                assert!(self.content.is_some());
+                self.handle_ack(cmd.header).await
+            }
         };
     }
 }

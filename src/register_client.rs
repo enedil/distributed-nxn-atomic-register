@@ -1,15 +1,10 @@
-use tokio::{io::AsyncWriteExt, stream, sync::Mutex};
+use tokio::sync::Mutex;
 
 use crate::{
-    serialize_register_command, Configuration, PublicConfiguration, RegisterCommand,
-    SystemCommandHeader, SystemRegisterCommand,
+    serialize_register_command, Configuration, RegisterCommand, SystemCommandHeader,
+    SystemRegisterCommand,
 };
-use std::{
-    collections::{HashMap, HashSet},
-    net::{IpAddr, Ipv4Addr, SocketAddr},
-    str::FromStr,
-    sync::Arc,
-};
+use std::{collections::HashMap, sync::Arc};
 
 #[async_trait::async_trait]
 /// We do not need any public implementation of this trait. It is there for use
@@ -54,11 +49,8 @@ impl ClientInfo {
         if self.stream.is_none() {
             let sockopt = tokio::net::TcpSocket::new_v4().ok();
             if let Some(sock) = sockopt {
-                let ipaddropt = IpAddr::from_str(&self.location.0);
-                if let Ok(ipaddr) = ipaddropt {
-                    let addr = std::net::SocketAddr::new(ipaddr, self.location.1);
-                    self.stream = sock.connect(addr).await.ok();
-                }
+                let addr = format!("{}:{}", self.location.0, self.location.1).parse().unwrap();
+                self.stream = sock.connect(addr).await.ok();
             }
         }
     }
