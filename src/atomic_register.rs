@@ -178,7 +178,6 @@ impl ARegister {
         sectors_manager: Arc<dyn SectorsManager>,
         process_count: u8,
     ) -> ARegister {
-        assert!(process_count == 1);
         let old_rid = metadata
             .get(ARegister::RID_KEY)
             .await
