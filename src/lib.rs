@@ -61,7 +61,6 @@ async fn handle_connection(
                     }
                 };
 
-                assert!((sector_idx as u64) < config.public.n_sectors);
                 if (sector_idx as u64) < config.public.n_sectors {
                     let specific_sender = {
                         let nnar_vec = nnars.lock().await;
