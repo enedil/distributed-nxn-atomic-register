@@ -12,11 +12,17 @@ struct HmacAsyncReader<'a> {
     data: &'a mut (dyn AsyncRead + Send + Unpin),
     client_hmac: HmacSha256,
     system_hmac: HmacSha256,
+    buf: Vec<u8>,
 }
 impl<'a> HmacAsyncReader<'a> {
     fn update_hmacs(&mut self, data: &[u8]) {
         self.client_hmac.update(data);
         self.system_hmac.update(data);
+        if data.len() == 4096 {
+            self.buf.extend_from_slice(&[42u8; 16]);
+        } else {
+            self.buf.extend_from_slice(data);
+        }
     }
     pub async fn read_until_magic(&mut self) -> Result<(), Error> {
         let mut buf = Vec::<u8>::new();
@@ -24,7 +30,7 @@ impl<'a> HmacAsyncReader<'a> {
             let c = self.data.read_u8().await?;
             buf.push(c);
             if buf.len() > MAGIC_NUMBER.len() {
-                buf.drain(0..(MAGIC_NUMBER.len() - buf.len() - 1));
+                buf.drain(0..=(MAGIC_NUMBER.len() - buf.len()));
             }
         }
         self.update_hmacs(&buf);
@@ -185,7 +191,7 @@ pub async fn deserialize_register_command(
 
 #[repr(u8)]
 #[derive(Copy, Clone)]
-pub (crate) enum ClientOperationType {
+pub(crate) enum ClientOperationType {
     Read,
     Write,
 }
@@ -217,21 +223,25 @@ impl ClientResponse {
 
 pub(crate) async fn serialize_response_to_client(
     data: &mut (dyn AsyncWrite + Send + Unpin),
-    hmac_key: &[u8; 64],
+    hmac_key: &[u8; 32],
     response: ClientResponse,
 ) -> Result<(), Error> {
     let hmac = HmacSha256::new_from_slice(hmac_key)
         .map_err(|_| make_error())
         .unwrap();
 
-    let mut writer = HmacAsyncWriter { writer: data, hmac };
+    let mut writer = HmacAsyncWriter {
+        writer: data,
+        hmac,
+        buf: vec![],
+    };
     writer.write_all(&MAGIC_NUMBER).await?;
 
     let padding = [31u8, 45u8];
     writer.write_all(&padding).await?;
 
     writer.write_u8(response.to_status() as u8).await?;
-    writer.write_u8(response.op_type() as u8 + 0x40).await?;
+    writer.write_u8(response.op_type() as u8 + 0x41).await?;
 
     if let ClientResponse::Ok(success) = response {
         writer.write_u64(success.request_identifier).await?;
@@ -288,25 +298,54 @@ pub async fn serialize_register_command(
             writer.write_all(system.header.msg_ident.as_bytes()).await?;
             writer.write_u64(system.header.read_ident).await?;
             writer.write_u64(system.header.sector_idx).await?;
-            writer
-                .write_all(match &system.content {
-                    SystemRegisterCommandContent::ReadProc => &[],
-                    SystemRegisterCommandContent::Value {
-                        timestamp: _,
-                        write_rank: _,
-                        sector_data,
-                    } => &sector_data.0,
-                    SystemRegisterCommandContent::WriteProc {
-                        timestamp: _,
-                        write_rank: _,
-                        data_to_write,
-                    } => &data_to_write.0,
-                    SystemRegisterCommandContent::Ack => &[],
-                })
-                .await?;
+
+            let padding = [0x88u8; 7];
+            match &system.content {
+                SystemRegisterCommandContent::ReadProc => {},
+                SystemRegisterCommandContent::Value {
+                    timestamp,
+                    write_rank,
+                    sector_data,
+                } => {
+                    writer.write_u64(*timestamp).await?;
+                    writer.write_all(&padding).await?;
+                    writer.write_u8(*write_rank).await?;
+                    writer.write_all(&sector_data.0).await?;
+                },
+                SystemRegisterCommandContent::WriteProc {
+                    timestamp,
+                    write_rank,
+                    data_to_write,
+                } => {
+                    writer.write_u64(*timestamp).await?;
+                    writer.write_all(&padding).await?;
+                    writer.write_u8(*write_rank).await?;
+                    writer.write_all(&data_to_write.0).await?;
+                }
+                SystemRegisterCommandContent::Ack => {},
+            }
         }
     };
     let computed_hmac = writer.hmac.finalize().into_bytes();
     data.write_all(&computed_hmac).await?;
     Ok(())
+}
+
+fn cmdname(cmd: &RegisterCommand) ->&str {
+    match cmd {
+        RegisterCommand::Client(x) => {
+            match &x.content {
+                ClientRegisterCommandContent::Read => "READ",
+                ClientRegisterCommandContent::Write { data } => "WRITE",
+            }
+        },
+        RegisterCommand::System(x) => {
+            match &x.content {
+                SystemRegisterCommandContent::ReadProc => "READ_PROC",
+                SystemRegisterCommandContent::Value { .. } => "VALUE",
+                SystemRegisterCommandContent::WriteProc { ..} => "WRITE_PROC",
+                SystemRegisterCommandContent::Ack => "ACK",
+            }
+        },
+    }
 }

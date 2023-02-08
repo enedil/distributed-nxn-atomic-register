@@ -64,29 +64,30 @@ async fn handle_connection(
                 if (sector_idx as u64) < config.public.n_sectors {
                     let specific_sender = {
                         let nnar_vec = nnars.lock().await;
-                        nnar_vec[sector_index_to_register_index(&config.public, sector_idx)]
-                            .clone()
+                        nnar_vec[sector_index_to_register_index(&config.public, sector_idx)].clone()
                     };
                     specific_sender.send(msg).await.expect("bbb");
                 } else {
                     let w = &mut *writer.lock().await;
                     serialize_response_to_client(
                         w,
-                        &config.hmac_system_key,
+                        &config.hmac_client_key,
                         ClientResponse::InvalidSector(
                             optype.expect("system sent invalid sector index!"),
                         ),
                     )
-                    .await.expect("coś sie nie udauo");
+                    .await
+                    .expect("coś sie nie udauo");
                 }
             } else {
                 let w = &mut *writer.lock().await;
                 serialize_response_to_client(
                     w,
-                    &config.hmac_system_key,
+                    &config.hmac_client_key,
                     ClientResponse::InvalidHmac(optype.expect("system sent invalid hmac")),
                 )
-                .await.expect("coś się nie udauo");
+                .await
+                .expect("coś się nie udauo");
             }
         } else {
             // continue
@@ -97,7 +98,7 @@ async fn handle_connection(
 async fn client_task(
     ar: Arc<Mutex<Box<dyn AtomicRegister>>>,
     cmd: (ClientRegisterCommand, Arc<Mutex<OwnedWriteHalf>>),
-    hmac_key: Arc<[u8; 64]>,
+    hmac_key: Box<[u8; 32]>,
 ) {
     let (finish_tx, finish_rx) = async_channel::bounded(1);
     {
@@ -107,14 +108,13 @@ async fn client_task(
             Box::new(|op_c| {
                 Box::pin(async move {
                     let client_socket = &mut *cmd.1.lock().await;
-                    serialize_response_to_client(
+                    let _ = serialize_response_to_client(
                         client_socket,
                         &hmac_key,
                         ClientResponse::Ok(op_c),
                     )
-                    .await
-                    .ok()
-                    .map(|_| todo!());
+                    .await;
+                    // TODO todo co z błędem?
                     finish_tx.send(()).await.unwrap()
                 })
             }),
@@ -147,7 +147,8 @@ async fn handle_cmd(
 async fn process_register(
     reg: Box<dyn AtomicRegister>,
     rx: Receiver<RegisterCommandInternal>,
-    hmac_system_key: Arc<[u8; 64]>,
+    hmac_system_key: Box<[u8; 64]>,
+    hmac_client_key: Box<[u8; 32]>,
 ) {
     let (client_sender, client_receiver) = async_channel::unbounded();
     let mut current_client_task: Option<tokio::task::JoinHandle<()>> = None;
@@ -166,7 +167,7 @@ async fn process_register(
                 tokio::select! {
                     cmd = rx.recv() => handle_cmd(regg.clone(), cmd, client_sender.clone()).await,
                     client_cmd = client_receiver.recv() =>
-                        current_client_task = Some(tokio::spawn(client_task(regg.clone(), client_cmd.unwrap(), hmac_system_key.clone()))),
+                        current_client_task = Some(tokio::spawn(client_task(regg.clone(), client_cmd.unwrap(), hmac_client_key.clone()))),
                 }
             }
         }
@@ -186,8 +187,10 @@ async fn make_atomic_register_process(
 
     let mut dir = config.public.storage_dir.clone();
     dir.push("naar");
-    tokio::fs::create_dir(dir.clone()).await.unwrap();
+    tokio::fs::create_dir_all(dir.clone()).await.unwrap();
     dir.push(format!("{:06x}", i));
+    tokio::fs::create_dir_all(dir.clone()).await.unwrap();
+
     let stable_storage = build_stable_storage(dir).await;
     let reg = build_atomic_register(
         self_ident,
@@ -201,7 +204,12 @@ async fn make_atomic_register_process(
     let (tx, rx) = async_channel::unbounded();
 
     (
-        tokio::spawn(process_register(reg, rx, Arc::new(config.hmac_system_key))),
+        tokio::spawn(process_register(
+            reg,
+            rx,
+            Box::new(config.hmac_system_key),
+            Box::new(config.hmac_client_key),
+        )),
         tx,
     )
 }

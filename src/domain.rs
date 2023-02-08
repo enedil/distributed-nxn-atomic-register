@@ -31,6 +31,15 @@ pub struct PublicConfiguration {
 #[derive(Clone, Eq, PartialEq, Debug)]
 pub struct SectorVec(pub Vec<u8>);
 
+impl std::hash::Hash for SectorVec {
+    fn hash<H>(&self, state: &mut H)
+    where
+        H: std::hash::Hasher,
+    {
+        
+    }
+}
+
 pub type SectorIdx = u64;
 
 #[derive(Debug, Clone)]
@@ -58,13 +67,13 @@ pub struct ClientRegisterCommand {
     pub content: ClientRegisterCommandContent,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub struct SystemRegisterCommand {
     pub header: SystemCommandHeader,
     pub content: SystemRegisterCommandContent,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Hash, PartialEq, Eq)]
 pub enum SystemRegisterCommandContent {
     ReadProc,
     Value {
