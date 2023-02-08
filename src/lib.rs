@@ -4,6 +4,7 @@ mod register_client;
 mod sectors_manager;
 mod stable_storage;
 mod transfer;
+use core::panic;
 use std::sync::Arc;
 
 use async_channel::Receiver;
@@ -39,6 +40,10 @@ async fn handle_connection(
             deserialize_register_command(&mut rx, &config.hmac_system_key, &config.hmac_client_key)
                 .await;
         if let Ok((cmd, ok)) = result {
+            let request_identifier = match &cmd {
+                RegisterCommand::Client(x) => x.header.request_identifier,
+                _ => 2137,
+            };
             let optype = match &cmd {
                 RegisterCommand::Client(c) => Some(match c.content {
                     ClientRegisterCommandContent::Read => ClientOperationType::Read,
@@ -68,8 +73,9 @@ async fn handle_connection(
                     };
                     if let Err(e) = specific_sender.send(msg).await {
                         log::error!(
-                            "failed to write to sender number {}, retrying connection",
-                            sector_index_to_register_index(&config.public, sector_idx)
+                            "failed to write to sender number {}, retrying connection: {}",
+                            sector_index_to_register_index(&config.public, sector_idx),
+                            e
                         )
                         // todo!(retry connection)
                     }
@@ -79,8 +85,11 @@ async fn handle_connection(
                     serialize_response_to_client(
                         w,
                         &config.hmac_client_key,
-                        ClientResponse::InvalidSector(
-                            optype.expect("system received invalid sector index!"),
+                        ClientResponsee(
+                            ClientResponse::InvalidSector(
+                                optype.expect("system received invalid sector index!"),
+                            ),
+                            request_identifier,
                         ),
                     )
                     .await
@@ -91,7 +100,10 @@ async fn handle_connection(
                 serialize_response_to_client(
                     w,
                     &config.hmac_client_key,
-                    ClientResponse::InvalidHmac(optype.expect("system sent invalid hmac")),
+                    ClientResponsee(
+                        ClientResponse::InvalidHmac(optype.expect("system sent invalid hmac")),
+                        request_identifier,
+                    ),
                 )
                 .await
                 .expect("coś się nie udauo");
@@ -118,7 +130,7 @@ async fn client_task(
                     let _ = serialize_response_to_client(
                         client_socket,
                         &hmac_key,
-                        ClientResponse::Ok(op_c),
+                        ClientResponsee(ClientResponse::Ok(op_c.clone()), op_c.request_identifier),
                     )
                     .await;
                     // TODO todo co z błędem?

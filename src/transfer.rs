@@ -218,6 +218,8 @@ pub(crate) enum ClientOperationType {
     Write,
 }
 
+pub (crate) struct ClientResponsee(pub ClientResponse, pub u64);
+
 pub(crate) enum ClientResponse {
     Ok(OperationSuccess),
     InvalidHmac(ClientOperationType),
@@ -246,7 +248,7 @@ impl ClientResponse {
 pub(crate) async fn serialize_response_to_client(
     data: &mut (dyn AsyncWrite + Send + Unpin),
     hmac_key: &[u8; 32],
-    response: ClientResponse,
+    response: ClientResponsee,
 ) -> Result<(), Error> {
     let hmac = HmacSha256::new_from_slice(hmac_key)
         .map_err(|_| make_error())
@@ -262,15 +264,17 @@ pub(crate) async fn serialize_response_to_client(
     let padding = [31u8, 45u8];
     writer.write_all(&padding).await?;
 
-    writer.write_u8(response.to_status() as u8).await?;
-    writer.write_u8(response.op_type() as u8 + 0x41).await?;
+    writer.write_u8(response.0.to_status() as u8).await?;
+    writer.write_u8(response.0.op_type() as u8 + 0x41).await?;
 
-    if let ClientResponse::Ok(success) = response {
+    if let ClientResponse::Ok(success) = response.0 {
         writer.write_u64(success.request_identifier).await?;
 
         if let OperationReturn::Read(buf) = success.op_return {
             writer.write_all(&buf.read_data.0).await?;
         };
+    } else {
+        writer.write_u64(response.1).await?;
     }
 
     let computed_hmac = writer.hmac.finalize().into_bytes();
