@@ -4,7 +4,6 @@ use crate::{
     serialize_register_command, Configuration, RegisterCommand, SystemCommandHeader,
     SystemRegisterCommand,
 };
-use core::panic;
 use std::{
     collections::{HashMap, HashSet},
     sync::Arc,
@@ -79,7 +78,7 @@ impl ClientInfo {
         if let Some(stream) = &mut self.stream {
             for msg in self.pending_messages.iter() {
                 let cmd = RegisterCommand::System(msg.as_ref().clone());
-                let mut buf: Vec<u8> = vec![];
+                let mut buf: Vec<u8> = vec![];  
                 if let Err(e) =
                     serialize_register_command(&cmd, stream, self.hmac_key.as_ref()).await
                 {
@@ -98,7 +97,7 @@ impl ClientInfo {
 
     fn append_message(&mut self, msg: Arc<SystemRegisterCommand>) {
         if self.pending_messages.contains(&msg) {
-            log::error!("found old message");
+            log::trace!("found old message: {:?}, pending len = {}", msg, self.pending_messages.len());
             self.pending_messages.remove(&msg);
         } else {
             self.pending_messages.insert(msg);
@@ -153,7 +152,8 @@ impl RegisterClientImpl {
 
 #[async_trait::async_trait]
 impl RegisterClient for RegisterClientImpl {
-    async fn send(&self, msg: Send) {
+    async fn send(&self, msg: Send)
+     {
         // TODO todo: serializuj wszystkie wiadomości tylko raz
 
         let mut client = self.clients[msg.target as usize - 1].lock().await;

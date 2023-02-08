@@ -122,6 +122,7 @@ struct OngoingCommand {
     success_callback: Option<CallbackType>,
     sector_idx: usize,
     request_identifier: u64,
+    last_broadcasted_message: Option<SystemRegisterCommand>,
 }
 
 struct ARegister {
@@ -207,14 +208,6 @@ impl ARegister {
         )
         .await;
 
-        self.content = Some(OngoingCommand {
-            content,
-            command_uuid: msg_ident,
-            success_callback: Some(success_callback),
-            sector_idx: header.sector_idx as usize,
-            request_identifier: header.request_identifier,
-        });
-
         self.store_rid().await;
 
         let cmd = SystemRegisterCommand {
@@ -226,6 +219,15 @@ impl ARegister {
             },
             content: SystemRegisterCommandContent::ReadProc,
         };
+
+        self.content = Some(OngoingCommand {
+            content,
+            command_uuid: msg_ident,
+            success_callback: Some(success_callback),
+            sector_idx: header.sector_idx as usize,
+            request_identifier: header.request_identifier,
+            last_broadcasted_message: Some(cmd.clone()),
+        });
 
         let msg = Broadcast { cmd: Arc::new(cmd) };
         log::warn!("broadcasting SystemRegisterCommandContent::ReadProc");
@@ -250,14 +252,6 @@ impl ARegister {
         )
         .await;
 
-        self.content = Some(OngoingCommand {
-            content,
-            command_uuid: msg_ident,
-            success_callback: Some(success_callback),
-            sector_idx: header.sector_idx as usize,
-            request_identifier: header.request_identifier
-        });
-
         self.store_rid().await;
 
         let cmd = SystemRegisterCommand {
@@ -269,8 +263,19 @@ impl ARegister {
             },
             content: SystemRegisterCommandContent::ReadProc,
         };
-        log::warn!("broadcasting {:?}", SystemRegisterCommandContent::ReadProc);
+
+        self.content = Some(OngoingCommand {
+            content,
+            command_uuid: msg_ident,
+            success_callback: Some(success_callback),
+            sector_idx: header.sector_idx as usize,
+            request_identifier: header.request_identifier,
+            last_broadcasted_message: Some(cmd.clone()),
+        });
+
+        log::warn!("broadcasting SystemRegisterCommandContent::ReadProc");
         let msg = Broadcast { cmd: Arc::new(cmd) };
+
         self.register_client.broadcast(msg).await;
     }
 
@@ -304,7 +309,10 @@ impl ARegister {
             }),
             target: process_identifier,
         };
-        log::warn!("sending SystemRegisterCommandContent::Value to {}", msg.target);
+        log::warn!(
+            "sending SystemRegisterCommandContent::Value to {}",
+            msg.target
+        );
         self.register_client.send(msg).await;
     }
 
@@ -339,6 +347,7 @@ impl ARegister {
                 success_callback: _,
                 sector_idx: current_sector_idx,
                 request_identifier: _,
+                last_broadcasted_message,
             }) => {
                 log::debug!(
                     "selfid={} readlist_size()={} self.rid={} write_phase={}",
@@ -360,6 +369,12 @@ impl ARegister {
                         if content.status != OperationStatus::Idle
                             && 2 * readlist_size(&content.readlist) > process_count
                         {
+                            self.register_client
+                                .broadcast(crate::Broadcast {
+                                    cmd: Arc::new(last_broadcasted_message.clone().unwrap()),
+                                })
+                                .await;
+
                             content.readlist[self.self_ident as usize - 1] =
                                 Some(content.wrtsval.clone());
                             assert_readlist_correst(&content.readlist);
@@ -386,7 +401,6 @@ impl ARegister {
                                     }
                                 }
                                 OperationStatus::Writing(writeval) => {
-
                                     content.wrtsval = WrTsVal {
                                         timestamp: maxread.timestamp + 1,
                                         wr: self.self_ident,
@@ -408,18 +422,19 @@ impl ARegister {
                             };
                             log::warn!("broadcasting SystemRegisterCommandContent::WriteProc");
 
+                            let msg = SystemRegisterCommand {
+                                header: SystemCommandHeader {
+                                    process_identifier: self.self_ident,
+                                    msg_ident,
+                                    read_ident,
+                                    sector_idx,
+                                },
+                                content: cmd_content,
+                            };
+
+                            *last_broadcasted_message = Some(msg.clone());
                             self.register_client
-                                .broadcast(Broadcast {
-                                    cmd: Arc::new(SystemRegisterCommand {
-                                        header: SystemCommandHeader {
-                                            process_identifier: self.self_ident,
-                                            msg_ident,
-                                            read_ident,
-                                            sector_idx,
-                                        },
-                                        content: cmd_content,
-                                    }),
-                                })
+                                .broadcast(Broadcast { cmd: Arc::new(msg) })
                                 .await;
                         }
                     }
@@ -474,7 +489,10 @@ impl ARegister {
             target: process_identifier,
         };
 
-        log::warn!("sending SystemRegisterCommandContent::Ack to {}", reply.target);
+        log::warn!(
+            "sending SystemRegisterCommandContent::Ack to {}",
+            reply.target
+        );
         self.register_client.send(reply).await;
     }
 
@@ -502,7 +520,8 @@ impl ARegister {
                 command_uuid,
                 success_callback,
                 sector_idx: ongoing_sector_idx,
-                request_identifier
+                request_identifier,
+                last_broadcasted_message,
             }) => {
                 if *ongoing_sector_idx == sector_idx as usize && *command_uuid == msg_ident {
                     if read_ident == rid && c.write_phase {
@@ -510,6 +529,12 @@ impl ARegister {
                         if c.status != OperationStatus::Idle
                             && 2 * acklist_size(&c.acklist) > processes_count
                         {
+                            self.register_client
+                                .broadcast(crate::Broadcast {
+                                    cmd: Arc::new(last_broadcasted_message.clone().unwrap()),
+                                })
+                                .await;
+
                             c.acklist = fresh_acklist(self.process_count);
                             c.write_phase = false;
 
@@ -650,9 +675,7 @@ impl AtomicRegister for ARegister {
                 self.handle_write_proc(cmd.header, timestamp, write_rank, data_to_write)
                     .await
             }
-            SystemRegisterCommandContent::Ack => {
-                self.handle_ack(cmd.header).await
-            }
+            SystemRegisterCommandContent::Ack => self.handle_ack(cmd.header).await,
         };
     }
 }
