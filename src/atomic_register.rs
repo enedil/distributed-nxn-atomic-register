@@ -338,7 +338,7 @@ impl ARegister {
                 command_uuid,
                 success_callback: _,
                 sector_idx: current_sector_idx,
-                request_identifier,
+                request_identifier: _,
             }) => {
                 log::debug!(
                     "selfid={} readlist_size()={} self.rid={} write_phase={}",
@@ -543,7 +543,7 @@ impl ARegister {
                 }
             }
             None => {
-                // skip old message
+                self.skip_old_message();
             }
         }
     }
@@ -639,7 +639,6 @@ impl AtomicRegister for ARegister {
                 write_rank,
                 sector_data,
             } => {
-                assert!(self.content.is_some());
                 self.handle_value(cmd.header, timestamp, write_rank, sector_data)
                     .await
             }
@@ -652,7 +651,6 @@ impl AtomicRegister for ARegister {
                     .await
             }
             SystemRegisterCommandContent::Ack => {
-                assert!(self.content.is_some());
                 self.handle_ack(cmd.header).await
             }
         };

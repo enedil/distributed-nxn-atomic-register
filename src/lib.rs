@@ -61,19 +61,26 @@ async fn handle_connection(
                     }
                 };
 
+                assert!((sector_idx as u64) < config.public.n_sectors);
                 if (sector_idx as u64) < config.public.n_sectors {
                     let specific_sender = {
                         let nnar_vec = nnars.lock().await;
                         nnar_vec[sector_index_to_register_index(&config.public, sector_idx)].clone()
                     };
-                    specific_sender.send(msg).await.expect("bbb");
+                    if let Err(e) = specific_sender.send(msg).await {
+                        log::error!(
+                            "failed to write to sender number {}, retrying connection",
+                            sector_index_to_register_index(&config.public, sector_idx)
+                        )
+                        // todo!(retry connection)
+                    }
                 } else {
                     let w = &mut *writer.lock().await;
                     serialize_response_to_client(
                         w,
                         &config.hmac_client_key,
                         ClientResponse::InvalidSector(
-                            optype.expect("system sent invalid sector index!"),
+                            optype.expect("system received invalid sector index!"),
                         ),
                     )
                     .await
@@ -147,7 +154,6 @@ async fn handle_cmd(
 async fn process_register(
     reg: Box<dyn AtomicRegister>,
     rx: Receiver<RegisterCommandInternal>,
-    hmac_system_key: Box<[u8; 64]>,
     hmac_client_key: Box<[u8; 32]>,
 ) {
     let (client_sender, client_receiver) = async_channel::unbounded();
@@ -204,12 +210,7 @@ async fn make_atomic_register_process(
     let (tx, rx) = async_channel::unbounded();
 
     (
-        tokio::spawn(process_register(
-            reg,
-            rx,
-            Box::new(config.hmac_system_key),
-            Box::new(config.hmac_client_key),
-        )),
+        tokio::spawn(process_register(reg, rx, Box::new(config.hmac_client_key))),
         tx,
     )
 }
@@ -225,8 +226,8 @@ pub async fn run_register_process(config: Configuration) {
 
     let mut nnars = vec![];
     let mut join_handles = vec![];
-    for i in 0..100 {
-        // todo - czemu 100?
+    for i in 0..5 {
+        // todo - czemu 5?
         let (jh, ar) = make_atomic_register_process(
             &config,
             sectors_manager.clone(),

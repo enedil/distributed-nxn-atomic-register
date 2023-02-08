@@ -79,6 +79,7 @@ impl ClientInfo {
         if let Some(stream) = &mut self.stream {
             for msg in self.pending_messages.iter() {
                 let cmd = RegisterCommand::System(msg.as_ref().clone());
+                let mut buf: Vec<u8> = vec![];
                 if let Err(e) =
                     serialize_register_command(&cmd, stream, self.hmac_key.as_ref()).await
                 {
@@ -96,15 +97,10 @@ impl ClientInfo {
     }
 
     fn append_message(&mut self, msg: Arc<SystemRegisterCommand>) {
-        log::trace!(
-            "append message msg    pending.len()={:?}",
-            self.pending_messages.len()
-        );
         if self.pending_messages.contains(&msg) {
-            log::trace!("if");
+            log::error!("found old message");
             self.pending_messages.remove(&msg);
         } else {
-            log::trace!("else");
             self.pending_messages.insert(msg);
         }
     }
