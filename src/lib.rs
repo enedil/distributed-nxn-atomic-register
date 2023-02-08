@@ -28,6 +28,35 @@ fn sector_index_to_register_index(config: &PublicConfiguration, idx: usize) -> u
     idx % config.tcp_locations.len()
 }
 
+async fn handle_self_channel(
+    config: Configuration,
+    chan: Receiver<SystemRegisterCommand>,
+    nnars: Arc<Mutex<Vec<Sender<RegisterCommandInternal>>>>,
+) {
+    loop {
+        let cmd = chan.recv().await;
+        match cmd {
+            Ok(cmd) => {
+                let specific_sender = {
+                    let nnar_vec = nnars.lock().await;
+                    nnar_vec[sector_index_to_register_index(
+                        &config.public,
+                        cmd.header.sector_idx as usize,
+                    )]
+                    .clone()
+                };
+                specific_sender
+                    .send(RegisterCommandInternal::System(cmd))
+                    .await
+                    .expect("msg from self failed lol");
+            }
+            Err(e) => {
+                log::error!("skipping msg from self chan with {}", e);
+            }
+        }
+    }
+}
+
 async fn handle_connection(
     config: Configuration,
     sock: tokio::net::TcpStream,
@@ -227,19 +256,27 @@ async fn make_atomic_register_process(
     )
 }
 
+fn nnar_count(config: &Configuration) -> usize {
+    //std::cmp::min(180, (config.public.n_sectors + 10) as usize / 11)
+    40
+}
+
 pub async fn run_register_process(config: Configuration) {
     let (host, port) = &config.public.tcp_locations[(config.public.self_rank - 1) as usize];
     let sock = tokio::net::TcpListener::bind(format!("{}:{}", host, port))
         .await
         .unwrap();
 
+    let (self_channel_tx, self_channel_rx) = async_channel::unbounded();
+
     let sectors_manager = build_sectors_manager(config.public.storage_dir.clone()).await;
-    let register_client = Arc::new(RegisterClientImpl::new(&config));
+    let register_client = Arc::new(RegisterClientImpl::new(&config, self_channel_tx));
+
+    assert!(nnar_count(&config) > 0);
 
     let mut nnars = vec![];
     let mut join_handles = vec![];
-    for i in 0..5 {
-        // todo - czemu 5?
+    for i in 0..nnar_count(&config) {
         let (jh, ar) = make_atomic_register_process(
             &config,
             sectors_manager.clone(),
@@ -252,6 +289,8 @@ pub async fn run_register_process(config: Configuration) {
     }
 
     let nnars_shared = Arc::new(Mutex::new(nnars));
+
+    tokio::spawn(handle_self_channel(config.clone(), self_channel_rx, nnars_shared.clone()));
 
     loop {
         let s = sock.accept().await.unwrap().0;

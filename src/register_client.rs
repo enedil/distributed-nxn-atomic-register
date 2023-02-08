@@ -1,3 +1,4 @@
+use async_channel::Sender;
 use tokio::sync::Mutex;
 
 use crate::{serialize_register_command, Configuration, RegisterCommand, SystemRegisterCommand};
@@ -129,10 +130,14 @@ pub(crate) struct RegisterClientImpl {
     clients: Arc<Vec<Mutex<ClientInfo>>>,
     timer_handle: Option<tokio::task::JoinHandle<()>>,
     self_id: u8,
+    self_channel: Sender<SystemRegisterCommand>,
 }
 
 impl RegisterClientImpl {
-    pub(crate) fn new(config: &Configuration) -> RegisterClientImpl {
+    pub(crate) fn new(
+        config: &Configuration,
+        self_channel: Sender<SystemRegisterCommand>,
+    ) -> RegisterClientImpl {
         let hmac_key = Arc::new(config.hmac_system_key);
         let mut client = RegisterClientImpl {
             clients: Arc::new(
@@ -145,6 +150,7 @@ impl RegisterClientImpl {
             ),
             timer_handle: None,
             self_id: config.public.self_rank,
+            self_channel,
         };
         client.run_timer();
         client
@@ -170,17 +176,31 @@ impl RegisterClientImpl {
     }
 
     async fn send_append(&self, msg: Send) {
-        let mut client = self.clients[msg.target as usize - 1].lock().await;
+        if msg.target == self.self_id {
+            self.self_channel
+                .send(msg.cmd.as_ref().clone())
+                .await
+                .expect("failed sending to self");
+        } else {
+            let mut client = self.clients[msg.target as usize - 1].lock().await;
 
-        client.try_connect().await;
-        client.append_message(msg.cmd.clone());
-        client.send_single_message(&msg.cmd).await;
+            client.try_connect().await;
+            client.append_message(msg.cmd.clone());
+            client.send_single_message(&msg.cmd).await;
+        }
     }
     async fn send_noappend(&self, msg: Send) {
-        let mut client = self.clients[msg.target as usize - 1].lock().await;
+        if msg.target == self.self_id {
+            self.self_channel
+                .send(msg.cmd.as_ref().clone())
+                .await
+                .expect("failed sending to self");
+        } else {
+            let mut client = self.clients[msg.target as usize - 1].lock().await;
 
-        client.try_connect().await;
-        client.send_single_message(&msg.cmd).await;
+            client.try_connect().await;
+            client.send_single_message(&msg.cmd).await;
+        }
     }
 }
 

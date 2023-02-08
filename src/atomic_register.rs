@@ -290,7 +290,6 @@ impl ARegister {
 
         let sector_data = self.sectors_manager.read_data(sector_idx).await;
 
-        // TODO: skąd czytać te dane?
         let (timestamp, write_rank) = self.sectors_manager.read_metadata(sector_idx).await;
 
         let msg = crate::Send {
