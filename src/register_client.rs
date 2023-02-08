@@ -56,7 +56,6 @@ impl ClientInfo {
             self.pending_messages.len()
         );
         if self.stream.is_none() {
-            log::warn!("location = {:?}", self.location);
             // TODO zabezpiecz się przed panic, bo inaczej się skończy na braku bezpieczeństwa - dwóch klientów połączonych
             let addr = format!("{}:{}", self.location.0, self.location.1);
             let c = tokio::net::TcpStream::connect(addr).await;

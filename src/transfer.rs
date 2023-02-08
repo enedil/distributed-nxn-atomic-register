@@ -58,10 +58,16 @@ impl<'a> HmacAsyncReader<'a> {
 struct HmacAsyncWriter<'a> {
     writer: &'a mut (dyn AsyncWrite + Send + Unpin),
     hmac: HmacSha256,
+    buf: Vec<u8>,
 }
 impl<'a> HmacAsyncWriter<'a> {
     fn update_hmac(&mut self, data: &[u8]) {
         self.hmac.update(data);
+        if data.len() == 4096 {
+            self.buf.extend_from_slice(&[42u8; 16]);
+        } else {
+            self.buf.extend_from_slice(data);
+        }
     }
     pub async fn write_all(&mut self, data: &[u8]) -> Result<(), Error> {
         self.update_hmac(data);
@@ -103,6 +109,7 @@ pub async fn deserialize_register_command(
         data,
         client_hmac,
         system_hmac,
+        buf: vec![],
     };
 
     reader.read_until_magic().await?;
@@ -183,9 +190,24 @@ pub async fn deserialize_register_command(
         RegisterCommand::Client(_) => reader.client_hmac,
         RegisterCommand::System(_) => reader.system_hmac,
     };
+    let x = reader.buf.clone();
     let mut hmac_buf = [0u8; 32];
     data.read_exact(&mut hmac_buf).await?;
+    let correct_mac = hmac.clone().finalize().into_bytes();
+    log::trace!("read   buf {:02x?}, len={}", x, x.len());
+    log::trace!("   cmd={}", cmdname(&payload));
+    log::trace!("hmac = {:02x?}\n", hmac_buf);
+
     let ok = hmac.verify_slice(&hmac_buf).is_ok();
+    if !ok {
+        log::error!(
+            "received {:?} should be {:?}. ckey={:?} skey={:?}",
+            hmac_buf,
+            correct_mac,
+            hmac_client_key,
+            hmac_system_key
+        );
+    }
     Ok((payload, ok))
 }
 
@@ -252,6 +274,7 @@ pub(crate) async fn serialize_response_to_client(
     }
 
     let computed_hmac = writer.hmac.finalize().into_bytes();
+    log::trace!("wrote1 buf={:02x?} len={}", writer.buf, writer.buf.len());
     data.write_all(&computed_hmac).await?;
 
     Ok(())
@@ -264,7 +287,11 @@ pub async fn serialize_register_command(
 ) -> Result<(), Error> {
     let hmac = HmacSha256::new_from_slice(hmac_key).map_err(|_| make_error())?;
 
-    let mut writer = HmacAsyncWriter { writer: data, hmac };
+    let mut writer = HmacAsyncWriter {
+        writer: data,
+        hmac,
+        buf: vec![],
+    };
     writer.write_all(&MAGIC_NUMBER).await?;
 
     let padding = [42u8, 24u8];
@@ -327,6 +354,10 @@ pub async fn serialize_register_command(
         }
     };
     let computed_hmac = writer.hmac.finalize().into_bytes();
+
+    log::trace!("wrote2 buf={:02x?} len={}", writer.buf, writer.buf.len());
+    log::trace!("   cmd={}", cmdname(cmd));
+    log::trace!("hmac = {:02x?}\n", computed_hmac);
     data.write_all(&computed_hmac).await?;
     Ok(())
 }

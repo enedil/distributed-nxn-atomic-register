@@ -228,6 +228,7 @@ impl ARegister {
         };
 
         let msg = Broadcast { cmd: Arc::new(cmd) };
+        log::warn!("broadcasting SystemRegisterCommandContent::ReadProc");
         self.register_client.broadcast(msg).await;
     }
 
@@ -268,12 +269,13 @@ impl ARegister {
             },
             content: SystemRegisterCommandContent::ReadProc,
         };
-
+        log::warn!("broadcasting {:?}", SystemRegisterCommandContent::ReadProc);
         let msg = Broadcast { cmd: Arc::new(cmd) };
         self.register_client.broadcast(msg).await;
     }
 
     async fn handle_read_proc(&mut self, header: SystemCommandHeader) {
+        log::warn!("selfid={} handle_read_proc {:?}", self.self_ident, header);
         let SystemCommandHeader {
             process_identifier,
             msg_ident,
@@ -282,6 +284,7 @@ impl ARegister {
         } = header;
 
         let sector_data = self.sectors_manager.read_data(sector_idx).await;
+
         // TODO: skąd czytać te dane?
         let (timestamp, write_rank) = self.sectors_manager.read_metadata(sector_idx).await;
 
@@ -301,6 +304,7 @@ impl ARegister {
             }),
             target: process_identifier,
         };
+        log::warn!("sending SystemRegisterCommandContent::Value to {}", msg.target);
         self.register_client.send(msg).await;
     }
 
@@ -311,6 +315,14 @@ impl ARegister {
         write_rank: u8,
         sector_data: SectorVec,
     ) {
+        log::warn!(
+            "selfid={} handle_value {:?} ts={} wr={}",
+            self.self_ident,
+            header,
+            timestamp,
+            write_rank
+        );
+
         let SystemCommandHeader {
             process_identifier,
             msg_ident,
@@ -328,6 +340,14 @@ impl ARegister {
                 sector_idx: current_sector_idx,
                 request_identifier,
             }) => {
+                log::debug!(
+                    "selfid={} readlist_size()={} self.rid={} write_phase={}",
+                    self.self_ident,
+                    readlist_size(&content.readlist),
+                    self.rid,
+                    content.write_phase,
+                );
+
                 if *command_uuid == msg_ident && sector_idx as usize == *current_sector_idx {
                     if read_ident == self.rid && !content.write_phase {
                         content.readlist[process_identifier as usize - 1] = Some(WrTsVal {
@@ -366,6 +386,7 @@ impl ARegister {
                                     }
                                 }
                                 OperationStatus::Writing(writeval) => {
+
                                     content.wrtsval = WrTsVal {
                                         timestamp: maxread.timestamp + 1,
                                         wr: self.self_ident,
@@ -385,6 +406,7 @@ impl ARegister {
                                 }
                                 OperationStatus::Idle => panic!("unreachable"),
                             };
+                            log::warn!("broadcasting SystemRegisterCommandContent::WriteProc");
 
                             self.register_client
                                 .broadcast(Broadcast {
@@ -416,6 +438,14 @@ impl ARegister {
         write_rank: u8,
         data_to_write: SectorVec,
     ) {
+        log::warn!(
+            "selfid={} handle_write_proc {:?} ts={} wr={}",
+            self.self_ident,
+            header,
+            timestamp,
+            write_rank
+        );
+
         let SystemCommandHeader {
             process_identifier,
             msg_ident,
@@ -444,6 +474,7 @@ impl ARegister {
             target: process_identifier,
         };
 
+        log::warn!("sending SystemRegisterCommandContent::Ack to {}", reply.target);
         self.register_client.send(reply).await;
     }
 
@@ -453,6 +484,8 @@ impl ARegister {
     }
 
     async fn handle_ack(&mut self, header: SystemCommandHeader) {
+        log::warn!("selfid={} handle_value {:?}", self.self_ident, header);
+
         let SystemCommandHeader {
             process_identifier,
             msg_ident,
