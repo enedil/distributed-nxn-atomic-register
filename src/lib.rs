@@ -75,6 +75,7 @@ async fn handle_connection(
                         // todo!(retry connection)
                     }
                 } else {
+                    assert!(optype.is_some());
                     let w = &mut *writer.lock().await;
                     serialize_response_to_client(
                         w,

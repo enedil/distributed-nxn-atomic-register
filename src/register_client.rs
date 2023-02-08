@@ -1,13 +1,7 @@
 use tokio::sync::Mutex;
 
-use crate::{
-    serialize_register_command, Configuration, RegisterCommand, SystemCommandHeader,
-    SystemRegisterCommand,
-};
-use std::{
-    collections::{HashMap, HashSet},
-    sync::Arc,
-};
+use crate::{serialize_register_command, Configuration, RegisterCommand, SystemRegisterCommand};
+use std::{collections::HashSet, sync::Arc};
 
 #[async_trait::async_trait]
 /// We do not need any public implementation of this trait. It is there for use
@@ -78,7 +72,7 @@ impl ClientInfo {
         if let Some(stream) = &mut self.stream {
             for msg in self.pending_messages.iter() {
                 let cmd = RegisterCommand::System(msg.as_ref().clone());
-                let mut buf: Vec<u8> = vec![];  
+                let mut buf: Vec<u8> = vec![];
                 if let Err(e) =
                     serialize_register_command(&cmd, stream, self.hmac_key.as_ref()).await
                 {
@@ -87,7 +81,29 @@ impl ClientInfo {
                 }
             }
         } else {
-            log::trace!("invalid stream!");
+            log::error!("invalid stream!");
+        }
+        if reset_steam {
+            self.stream = None;
+            self.try_connect().await;
+        }
+    }
+
+    async fn send_single_message(&mut self, msg: &SystemRegisterCommand) {
+        log::trace!(
+            "try send: pending messages are {:?}",
+            self.pending_messages.len()
+        );
+        let mut reset_steam = false;
+        if let Some(stream) = &mut self.stream {
+            let cmd = RegisterCommand::System(msg.clone());
+
+            if let Err(e) = serialize_register_command(&cmd, stream, self.hmac_key.as_ref()).await {
+                log::error!("failed to send message: err={:?}", e);
+                reset_steam = true;
+            }
+        } else {
+            log::error!("invalid stream!");
         }
         if reset_steam {
             self.stream = None;
@@ -97,7 +113,11 @@ impl ClientInfo {
 
     fn append_message(&mut self, msg: Arc<SystemRegisterCommand>) {
         if self.pending_messages.contains(&msg) {
-            log::trace!("found old message: {:?}, pending len = {}", msg, self.pending_messages.len());
+            log::trace!(
+                "found old message: {:?}, pending len = {}",
+                msg,
+                self.pending_messages.len()
+            );
             self.pending_messages.remove(&msg);
         } else {
             self.pending_messages.insert(msg);
@@ -134,7 +154,7 @@ impl RegisterClientImpl {
         // todo meeh
         let client_info = self.clients.clone();
         self.timer_handle = Some(tokio::task::spawn(async move {
-            let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(700));
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(100));
 
             loop {
                 interval.tick().await;
@@ -148,23 +168,30 @@ impl RegisterClientImpl {
             }
         }));
     }
+
+    async fn send_append(&self, msg: Send) {
+        let mut client = self.clients[msg.target as usize - 1].lock().await;
+
+        client.try_connect().await;
+        client.append_message(msg.cmd.clone());
+        client.send_single_message(&msg.cmd).await;
+    }
+    async fn send_noappend(&self, msg: Send) {
+        let mut client = self.clients[msg.target as usize - 1].lock().await;
+
+        client.try_connect().await;
+        client.send_single_message(&msg.cmd).await;
+    }
 }
 
 #[async_trait::async_trait]
 impl RegisterClient for RegisterClientImpl {
-    async fn send(&self, msg: Send)
-     {
-        // TODO todo: serializuj wszystkie wiadomości tylko raz
-
-        let mut client = self.clients[msg.target as usize - 1].lock().await;
-
-        client.try_connect().await;
-        client.append_message(msg.cmd);
-        client.try_send().await;
+    async fn send(&self, msg: Send) {
+        self.send_noappend(msg).await;
     }
     async fn broadcast(&self, msg: Broadcast) {
         for i in 1..=self.clients.len() {
-            self.send(Send {
+            self.send_append(Send {
                 target: i as u8,
                 cmd: msg.cmd.clone(),
             })
