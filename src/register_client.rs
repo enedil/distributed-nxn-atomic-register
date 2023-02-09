@@ -176,6 +176,7 @@ impl RegisterClientImpl {
     }
 
     async fn send_append(&self, msg: Send) {
+        log::error!("msg.target={}, self_id={}", msg.target, self.self_id);
         if msg.target == self.self_id {
             self.self_channel
                 .send(msg.cmd.as_ref().clone())

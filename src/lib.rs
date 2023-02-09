@@ -109,33 +109,60 @@ async fn handle_connection(
                         // todo!(retry connection)
                     }
                 } else {
-                    assert!(optype.is_some());
-                    let w = &mut *writer.lock().await;
-                    serialize_response_to_client(
-                        w,
-                        &config.hmac_client_key,
-                        ClientResponsee(
-                            ClientResponse::InvalidSector(
-                                optype.expect("system received invalid sector index!"),
-                            ),
-                            request_identifier,
-                        ),
-                    )
-                    .await
-                    .expect("coś sie nie udauo");
+                    match optype {
+                        Some(optype) => {
+                            let w = &mut *writer.lock().await;
+                            serialize_response_to_client(
+                                w,
+                                &config.hmac_client_key,
+                                ClientResponsee(
+                                    ClientResponse::InvalidSector(optype),
+                                    request_identifier,
+                                ),
+                            )
+                            .await
+                            .err()
+                            .map(|e| {
+                                log::info!(
+                                    "selfid={} couldn't send response to client due to {}",
+                                    config.public.self_rank,
+                                    e
+                                )
+                            });
+                        }
+                        None => {
+                            log::info!("system sent invalid sector index");
+                        }
+                    }
                 }
             } else {
-                let w = &mut *writer.lock().await;
-                serialize_response_to_client(
-                    w,
-                    &config.hmac_client_key,
-                    ClientResponsee(
-                        ClientResponse::InvalidHmac(optype.expect("system sent invalid hmac")),
-                        request_identifier,
-                    ),
-                )
-                .await
-                .expect("coś się nie udauo");
+                match optype {
+                    Some(optype) => {
+                        // packet from client
+                        let w = &mut *writer.lock().await;
+                        serialize_response_to_client(
+                            w,
+                            &config.hmac_client_key,
+                            ClientResponsee(
+                                ClientResponse::InvalidHmac(optype),
+                                request_identifier,
+                            ),
+                        )
+                        .await
+                        .err()
+                        .map(|e| {
+                            log::info!(
+                                "selfid={} couldn't send response to client due to {}",
+                                config.public.self_rank,
+                                e
+                            )
+                        });
+                    }
+                    None => {
+                        // packet from system
+                        log::info!("system sent invalid hmac");
+                    }
+                }
             }
         } else {
             // continue
@@ -290,7 +317,11 @@ pub async fn run_register_process(config: Configuration) {
 
     let nnars_shared = Arc::new(Mutex::new(nnars));
 
-    tokio::spawn(handle_self_channel(config.clone(), self_channel_rx, nnars_shared.clone()));
+    tokio::spawn(handle_self_channel(
+        config.clone(),
+        self_channel_rx,
+        nnars_shared.clone(),
+    ));
 
     loop {
         let s = sock.accept().await.unwrap().0;

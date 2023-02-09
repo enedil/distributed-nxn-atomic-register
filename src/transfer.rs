@@ -30,7 +30,7 @@ impl<'a> HmacAsyncReader<'a> {
             let c = self.data.read_u8().await?;
             buf.push(c);
             if buf.len() > MAGIC_NUMBER.len() {
-                buf.drain(0..=(MAGIC_NUMBER.len() - buf.len()));
+                buf.drain(0..(buf.len() - MAGIC_NUMBER.len()));
             }
         }
         self.update_hmacs(&buf);
