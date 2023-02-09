@@ -218,7 +218,7 @@ pub(crate) enum ClientOperationType {
     Write,
 }
 
-pub (crate) struct ClientResponsee(pub ClientResponse, pub u64);
+pub(crate) struct ClientResponsee(pub ClientResponse, pub u64);
 
 pub(crate) enum ClientResponse {
     Ok(OperationSuccess),
@@ -332,7 +332,7 @@ pub async fn serialize_register_command(
 
             let padding = [0x88u8; 7];
             match &system.content {
-                SystemRegisterCommandContent::ReadProc => {},
+                SystemRegisterCommandContent::ReadProc => {}
                 SystemRegisterCommandContent::Value {
                     timestamp,
                     write_rank,
@@ -342,7 +342,7 @@ pub async fn serialize_register_command(
                     writer.write_all(&padding).await?;
                     writer.write_u8(*write_rank).await?;
                     writer.write_all(&sector_data.0).await?;
-                },
+                }
                 SystemRegisterCommandContent::WriteProc {
                     timestamp,
                     write_rank,
@@ -353,34 +353,27 @@ pub async fn serialize_register_command(
                     writer.write_u8(*write_rank).await?;
                     writer.write_all(&data_to_write.0).await?;
                 }
-                SystemRegisterCommandContent::Ack => {},
+                SystemRegisterCommandContent::Ack => {}
             }
         }
     };
     let computed_hmac = writer.hmac.finalize().into_bytes();
 
-    log::trace!("wrote2 buf={:02x?} len={}", writer.buf, writer.buf.len());
-    log::trace!("   cmd={}", cmdname(cmd));
-    log::trace!("hmac = {:02x?}\n", computed_hmac);
     data.write_all(&computed_hmac).await?;
     Ok(())
 }
 
-fn cmdname(cmd: &RegisterCommand) ->&str {
+fn cmdname(cmd: &RegisterCommand) -> &str {
     match cmd {
-        RegisterCommand::Client(x) => {
-            match &x.content {
-                ClientRegisterCommandContent::Read => "READ",
-                ClientRegisterCommandContent::Write { data } => "WRITE",
-            }
+        RegisterCommand::Client(x) => match &x.content {
+            ClientRegisterCommandContent::Read => "READ",
+            ClientRegisterCommandContent::Write { data } => "WRITE",
         },
-        RegisterCommand::System(x) => {
-            match &x.content {
-                SystemRegisterCommandContent::ReadProc => "READ_PROC",
-                SystemRegisterCommandContent::Value { .. } => "VALUE",
-                SystemRegisterCommandContent::WriteProc { ..} => "WRITE_PROC",
-                SystemRegisterCommandContent::Ack => "ACK",
-            }
+        RegisterCommand::System(x) => match &x.content {
+            SystemRegisterCommandContent::ReadProc => "READ_PROC",
+            SystemRegisterCommandContent::Value { .. } => "VALUE",
+            SystemRegisterCommandContent::WriteProc { .. } => "WRITE_PROC",
+            SystemRegisterCommandContent::Ack => "ACK",
         },
     }
 }

@@ -17,7 +17,6 @@ pub trait StableStorage: Send + Sync {
 
 struct SStorage {
     root_storage_dir: PathBuf,
-    root: tokio::fs::File,
 }
 
 fn encode<T: AsRef<[u8]>>(data: T) -> String {
@@ -27,6 +26,11 @@ fn encode<T: AsRef<[u8]>>(data: T) -> String {
 }
 
 impl SStorage {
+    async fn open_root(&self) -> tokio::fs::File {
+        tokio::fs::File::open(self.root_storage_dir.clone())
+            .await
+            .unwrap()
+    }
     fn path_for_key(&self, key: &str) -> Result<PathBuf, String> {
         if key.len() > 255 {
             return Err("key too long".to_string());
@@ -57,7 +61,7 @@ impl StableStorage for SStorage {
             tempfile.write_all(value).await.unwrap();
             tempfile.sync_data().await.unwrap();
             tokio::fs::rename(tempfile_path, path).await.unwrap();
-            self.root.sync_data().await.unwrap();
+            self.open_root().await.sync_data().await.unwrap();
             Ok(())
         }
     }
@@ -79,7 +83,7 @@ impl StableStorage for SStorage {
         if let Ok(path) = self.path_for_key(key) {
             match tokio::fs::remove_file(path).await {
                 Ok(_) => {
-                    self.root.sync_data().await.unwrap();
+                    self.open_root().await.sync_data().await.unwrap();
                     true
                 }
                 Err(_) => false,
@@ -92,11 +96,5 @@ impl StableStorage for SStorage {
 
 /// Creates a new instance of stable storage.
 pub async fn build_stable_storage(root_storage_dir: PathBuf) -> Box<dyn StableStorage> {
-    let root = tokio::fs::File::open(root_storage_dir.clone())
-        .await
-        .unwrap();
-    Box::new(SStorage {
-        root_storage_dir,
-        root,
-    })
+    Box::new(SStorage { root_storage_dir })
 }
