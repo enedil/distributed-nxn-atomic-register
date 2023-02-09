@@ -154,7 +154,7 @@ impl RegisterClientImpl {
         // todo meeh
         let client_info = self.clients.clone();
         self.timer_handle = Some(tokio::task::spawn(async move {
-            let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(100));
+            let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(1000));
 
             loop {
                 interval.tick().await;
