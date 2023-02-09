@@ -285,12 +285,12 @@ async fn make_atomic_register_process(
 
 fn nnar_count(config: &Configuration) -> usize {
     //std::cmp::min(180, (config.public.n_sectors + 10) as usize / 11)
-    40
+    10
 }
 
 pub async fn run_register_process(config: Configuration) {
     let (host, port) = &config.public.tcp_locations[(config.public.self_rank - 1) as usize];
-    let sock = tokio::net::TcpListener::bind(format!("{}:{}", host, port))
+    let sock = tokio::net::TcpListener::bind((host.clone(), *port))
         .await
         .unwrap();
 
