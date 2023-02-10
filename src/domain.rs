@@ -28,13 +28,17 @@ pub struct PublicConfiguration {
     pub n_sectors: u64,
 }
 
-#[derive(Clone, Eq, PartialEq, Hash)]
+#[derive(Clone, Eq, PartialEq)]
 pub struct SectorVec(pub Vec<u8>);
 
 impl std::fmt::Debug for SectorVec {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("Vec{..}")
     }
+}
+
+impl std::hash::Hash for SectorVec {
+    fn hash<H: std::hash::Hasher>(&self, _state: &mut H) {}
 }
 
 pub type SectorIdx = u64;

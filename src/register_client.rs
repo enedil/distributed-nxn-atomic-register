@@ -72,7 +72,6 @@ impl ClientInfo {
         if let Some(stream) = &mut self.stream {
             for msg in self.pending_messages.iter() {
                 let cmd = RegisterCommand::System(msg.as_ref().clone());
-                let mut buf: Vec<u8> = vec![];
                 if let Err(e) =
                     serialize_register_command(&cmd, stream, self.hmac_key.as_ref()).await
                 {
@@ -155,11 +154,15 @@ impl RegisterClientImpl {
         client
     }
 
+    fn timer_interval() -> tokio::time::Duration {
+        tokio::time::Duration::from_millis(400)
+    }
+
     fn run_timer(&mut self) {
         // todo meeh
         let client_info = self.clients.clone();
         self.timer_handle = Some(tokio::task::spawn(async move {
-            let mut interval = tokio::time::interval(tokio::time::Duration::from_millis(1000));
+            let mut interval = tokio::time::interval(RegisterClientImpl::timer_interval());
 
             loop {
                 interval.tick().await;

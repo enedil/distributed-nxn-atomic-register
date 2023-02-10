@@ -284,8 +284,7 @@ async fn make_atomic_register_process(
 }
 
 fn nnar_count(config: &Configuration) -> usize {
-    //std::cmp::min(180, (config.public.n_sectors + 10) as usize / 11)
-    1000
+    std::cmp::min(1024, (config.public.n_sectors + 10) as usize / 11)
 }
 
 pub async fn run_register_process(config: Configuration) {

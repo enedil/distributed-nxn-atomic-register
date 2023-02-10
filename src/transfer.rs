@@ -367,7 +367,7 @@ fn cmdname(cmd: &RegisterCommand) -> &str {
     match cmd {
         RegisterCommand::Client(x) => match &x.content {
             ClientRegisterCommandContent::Read => "READ",
-            ClientRegisterCommandContent::Write { data } => "WRITE",
+            ClientRegisterCommandContent::Write { .. } => "WRITE",
         },
         RegisterCommand::System(x) => match &x.content {
             SystemRegisterCommandContent::ReadProc => "READ_PROC",
