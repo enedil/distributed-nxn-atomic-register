@@ -196,7 +196,7 @@ impl ARegister {
     }
 
     async fn handle_read(&mut self, header: ClientCommandHeader, success_callback: CallbackType) {
-        log::warn!("selfid={} handle_read {:?}", self.self_ident, header);
+        log::trace!("selfid={} handle_read {:?}", self.self_ident, header);
 
         let msg_ident = Uuid::new_v4();
 
@@ -230,7 +230,7 @@ impl ARegister {
         });
 
         let msg = Broadcast { cmd: Arc::new(cmd) };
-        log::warn!("broadcasting SystemRegisterCommandContent::ReadProc");
+        log::trace!("broadcasting SystemRegisterCommandContent::ReadProc");
         self.register_client.broadcast(msg).await;
     }
 
@@ -240,7 +240,7 @@ impl ARegister {
         data: SectorVec,
         success_callback: CallbackType,
     ) {
-        log::warn!("selfid={} handle_write {:?}", self.self_ident, header);
+        log::trace!("selfid={} handle_write {:?}", self.self_ident, header);
 
         let msg_ident = Uuid::new_v4();
 
@@ -273,14 +273,14 @@ impl ARegister {
             last_broadcasted_message: Some(cmd.clone()),
         });
 
-        log::warn!("broadcasting SystemRegisterCommandContent::ReadProc");
+        log::trace!("broadcasting SystemRegisterCommandContent::ReadProc");
         let msg = Broadcast { cmd: Arc::new(cmd) };
 
         self.register_client.broadcast(msg).await;
     }
 
     async fn handle_read_proc(&mut self, header: SystemCommandHeader) {
-        log::warn!("selfid={} handle_read_proc {:?}", self.self_ident, header);
+        log::trace!("selfid={} handle_read_proc {:?}", self.self_ident, header);
         let SystemCommandHeader {
             process_identifier,
             msg_ident,
@@ -309,7 +309,7 @@ impl ARegister {
             }),
             target: process_identifier,
         };
-        log::warn!(
+        log::trace!(
             "sending SystemRegisterCommandContent::Value to {}",
             msg.target
         );
@@ -323,7 +323,7 @@ impl ARegister {
         write_rank: u8,
         sector_data: SectorVec,
     ) {
-        log::warn!(
+        log::trace!(
             "selfid={} handle_value {:?} ts={} wr={}",
             self.self_ident,
             header,
@@ -420,7 +420,7 @@ impl ARegister {
                                 }
                                 OperationStatus::Idle => panic!("unreachable"),
                             };
-                            log::warn!("broadcasting SystemRegisterCommandContent::WriteProc");
+                            log::trace!("broadcasting SystemRegisterCommandContent::WriteProc");
 
                             let msg = SystemRegisterCommand {
                                 header: SystemCommandHeader {
@@ -453,7 +453,7 @@ impl ARegister {
         write_rank: u8,
         data_to_write: SectorVec,
     ) {
-        log::warn!(
+        log::trace!(
             "selfid={} handle_write_proc {:?} ts={} wr={}",
             self.self_ident,
             header,
@@ -489,7 +489,7 @@ impl ARegister {
             target: process_identifier,
         };
 
-        log::warn!(
+        log::trace!(
             "sending SystemRegisterCommandContent::Ack to {}",
             reply.target
         );
@@ -502,7 +502,7 @@ impl ARegister {
     }
 
     async fn handle_ack(&mut self, header: SystemCommandHeader) {
-        log::warn!("selfid={} handle_value {:?}", self.self_ident, header);
+        log::trace!("selfid={} handle_value {:?}", self.self_ident, header);
 
         let SystemCommandHeader {
             process_identifier,
