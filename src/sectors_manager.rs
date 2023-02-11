@@ -24,6 +24,7 @@ const SECTORS_PREFIX: &str = "sectors";
 
 /// Path parameter points to a directory to which this method has exclusive access.
 pub async fn build_sectors_manager(path: PathBuf) -> Arc<dyn SectorsManager> {
+    log::trace!("build_sectors_manager {:?}", path);
     let mut sectors_path = path.clone();
     sectors_path.push(SECTORS_PREFIX);
     tokio::fs::create_dir_all(&sectors_path).await.unwrap();
@@ -126,6 +127,7 @@ impl SectorsManager for SectorsM {
         }
     }
     async fn write(&self, idx: SectorIdx, sector: &(SectorVec, u64, u8)) {
+        log::warn!("writing to sector manager idx={} {:?}", idx, sector);
         let (vec, new_timestamp, new_rank) = sector;
         let mut new_file =
             tokio::fs::File::create(self.path_for_entry(idx, *new_timestamp, *new_rank))
@@ -141,8 +143,12 @@ impl SectorsManager for SectorsM {
             Some(lock) => {
                 let mut x = lock.write().await;
                 let (old_timestamp, old_rank) = *x;
-                *x = (*new_timestamp, *new_rank);
-                Some((old_timestamp, old_rank))
+                if (old_timestamp, old_rank) == (*new_timestamp, *new_rank) {
+                    None
+                } else {
+                    *x = (*new_timestamp, *new_rank);
+                    Some((old_timestamp, old_rank))
+                }
             }
             None => {
                 metadata.insert(idx, (*new_timestamp, *new_rank).into());
@@ -150,11 +156,9 @@ impl SectorsManager for SectorsM {
             }
         };
         if let Some((old_timestamp, old_rank)) = p {
-            if (old_timestamp, old_rank) != (*new_timestamp, *new_rank) {
-                tokio::fs::remove_file(self.path_for_entry(idx, old_timestamp, old_rank))
-                    .await
-                    .expect("could not remove old file");
-            }
+            tokio::fs::remove_file(self.path_for_entry(idx, old_timestamp, old_rank))
+                .await
+                .expect("could not remove old file");
         }
     }
 }
