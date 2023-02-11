@@ -150,9 +150,11 @@ impl SectorsManager for SectorsM {
             }
         };
         if let Some((old_timestamp, old_rank)) = p {
-            tokio::fs::remove_file(self.path_for_entry(idx, old_timestamp, old_rank))
-                .await
-                .expect("could not remove old file");
+            if (old_timestamp, old_rank) != (*new_timestamp, *new_rank) {
+                tokio::fs::remove_file(self.path_for_entry(idx, old_timestamp, old_rank))
+                    .await
+                    .expect("could not remove old file");
+            }
         }
     }
 }
